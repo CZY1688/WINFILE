@@ -1,6 +1,7 @@
 #include "resource.h"
 #include "BForm.h"
 #include <commdlg.h>
+#include <stdio.h>
 #include <vector>
 #pragma comment(lib, "comdlg32.lib")
 
@@ -12,6 +13,12 @@ TCHAR g_szCurrentFile[MAX_PATH] = TEXT("");
 bool g_bModified = false;
 // 代码主动设置文本时，避免触发“已修改”标志。
 bool g_bInternalUpdating = false;
+// 主编辑框与窗体边缘的留白。
+const int cEditorMargin = 6;
+// 编辑框最小宽高，避免窗体过小时控件不可用。
+const int cMinEditorSize = 10;
+// 单次允许打开的最大文件体积（64MB）。
+const LONGLONG cMaxOpenFileSize = 1024LL * 1024LL * 64LL;
 
 void UpdateTitle()
 {
@@ -117,7 +124,7 @@ bool LoadTextFile(LPCTSTR szFilePath)
 		return false;
 	}
 
-	if (liSize.QuadPart > 1024LL * 1024LL * 64LL)
+	if (liSize.QuadPart > cMaxOpenFileSize)
 	{
 		CloseHandle(hFile);
 		MsgBox(TEXT("文件过大（超过64MB），暂不支持打开。"), TEXT("我的记事本"), mb_OK, mb_IconExclamation);
@@ -182,7 +189,18 @@ bool LoadTextFile(LPCTSTR szFilePath)
 
 bool SaveTextFile(LPCTSTR szFilePath)
 {
-	HANDLE hFile = CreateFile(szFilePath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	TCHAR szTempPath[MAX_PATH + 8];
+	// 参数来源于 OPENFILENAME，按 MAX_PATH 约定处理并预留 ".tmp" 后缀。
+	if (lstrlen(szFilePath) >= MAX_PATH - 4)
+	{
+		MsgBox(TEXT("文件路径过长，无法保存。"), TEXT("我的记事本"), mb_OK, mb_IconError);
+		return false;
+	}
+	lstrcpyn(szTempPath, szFilePath, _countof(szTempPath));
+	lstrcat(szTempPath, TEXT(".tmp"));
+
+	// 先写临时文件，写入成功后再覆盖原文件，避免中途失败导致原文件损坏。
+	HANDLE hFile = CreateFile(szTempPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE)
 	{
 		MsgBox(TEXT("文件保存失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
@@ -194,6 +212,7 @@ bool SaveTextFile(LPCTSTR szFilePath)
 	if (!WriteFile(hFile, bom, 2, &dwWritten, NULL) || dwWritten != 2)
 	{
 		CloseHandle(hFile);
+		DeleteFile(szTempPath);
 		MsgBox(TEXT("写入文件头失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
@@ -205,12 +224,20 @@ bool SaveTextFile(LPCTSTR szFilePath)
 		if (!WriteFile(hFile, sText.c_str(), dwTextBytes, &dwWritten, NULL) || dwWritten != dwTextBytes)
 		{
 			CloseHandle(hFile);
+			DeleteFile(szTempPath);
 			MsgBox(TEXT("写入文件内容失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 			return false;
 		}
 	}
 
 	CloseHandle(hFile);
+	if (!MoveFileEx(szTempPath, szFilePath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
+	{
+		DeleteFile(szTempPath);
+		MsgBox(TEXT("替换目标文件失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
+		return false;
+	}
+
 	lstrcpyn(g_szCurrentFile, szFilePath, MAX_PATH);
 	g_bModified = false;
 	UpdateTitle();
@@ -236,7 +263,8 @@ bool SaveCurrentFile()
 	return SaveTextFile(g_szCurrentFile);
 }
 
-bool QuerySave()
+// 返回 true 表示“应取消当前操作”，返回 false 表示“可继续操作”。
+bool ShouldCancelByUnsavedChanges()
 {
 	if (!g_bModified)
 	{
@@ -246,11 +274,7 @@ bool QuerySave()
 	EDlgBoxCmdID cmd = MsgBox(TEXT("当前内容已修改，是否先保存？"), TEXT("我的记事本"), mb_YesNoCancel, mb_IconExclamation);
 	if (cmd == idYes)
 	{
-		if (!SaveCurrentFile())
-		{
-			return true;
-		}
-		return false;
+		return !SaveCurrentFile();
 	}
 	if (cmd == idCancel)
 	{
@@ -268,12 +292,11 @@ void form1_Load()
 
 void form1_Resize()
 {
-	int margin = 6;
-	int w = form1.ClientWidth() - margin * 2;
-	int h = form1.ClientHeight() - margin * 2;
-	if (w < 10) w = 10;
-	if (h < 10) h = 10;
-	form1.Control(ID_txtMain).Move(margin, margin, w, h);
+	int w = form1.ClientWidth() - cEditorMargin * 2;
+	int h = form1.ClientHeight() - cEditorMargin * 2;
+	if (w < cMinEditorSize) w = cMinEditorSize;
+	if (h < cMinEditorSize) h = cMinEditorSize;
+	form1.Control(ID_txtMain).Move(cEditorMargin, cEditorMargin, w, h);
 }
 
 void txtMain_Change()
@@ -288,9 +311,15 @@ void txtMain_Change()
 
 void form1_QueryUnload(int pbCancel)
 {
-	if (QuerySave())
+	// eForm_QueryUnload 的回调签名在框架中固定为 int。
+	// 按框架约定：该 int 实际上传入的是 int* 地址值（本工程为 Win32，指针与 int 同宽）。
+	if (ShouldCancelByUnsavedChanges())
 	{
-		*((int*)pbCancel) = 1;
+		int* pCancel = (int*)(INT_PTR)pbCancel;
+		if (pCancel != NULL)
+		{
+			*pCancel = 1;
+		}
 	}
 }
 
@@ -298,7 +327,7 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 {
 	if (menuID == ID_mnuFileNew)
 	{
-		if (QuerySave()) return;
+		if (ShouldCancelByUnsavedChanges()) return;
 		g_bInternalUpdating = true;
 		form1.Control(ID_txtMain).TextSet(TEXT(""));
 		g_bInternalUpdating = false;
@@ -310,7 +339,7 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 
 	if (menuID == ID_mnuFileOpen)
 	{
-		if (QuerySave()) return;
+		if (ShouldCancelByUnsavedChanges()) return;
 		TCHAR szFilePath[MAX_PATH];
 		if (SelectOpenFile(szFilePath, MAX_PATH))
 		{
@@ -372,7 +401,7 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 		SYSTEMTIME st;
 		GetLocalTime(&st);
 		TCHAR szTimeDate[64];
-		wsprintf(szTimeDate, TEXT("%04d-%02d-%02d %02d:%02d:%02d"),
+		swprintf_s(szTimeDate, _countof(szTimeDate), TEXT("%04d-%02d-%02d %02d:%02d:%02d"),
 			st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
 		form1.Control(ID_txtMain).SelTextSet(szTimeDate);
 		return;
