@@ -1,0 +1,260 @@
+OPENFILENAME结构体类型 
+typedef  struct  tagOFN {
+    DWORD	lStructSize; 	// 本类型数据的大小（字节）
+    HWND	hwndOwner; 	// 对话框的父窗口句柄，可为0表示无父窗口
+    HINSTANCE	hInstance; 	// 对话框模板句柄或模板的模块标识
+    LPCTSTR 	lpstrFilter; 	// 文件类型筛选字符串
+    LPTSTR	lpstrCustomFilter; 	// 系统保存的上次用户选择的筛选规则或用户自定义规则
+    DWORD	nMaxCustFilter; 	// lpstrCustomFilter 的长度
+    DWORD	nFilterIndex; 	// 用户在文件类型框中选择的筛选规则编号(从1开始编号)
+    LPTSTR	lpstrFile; 	// 对话框的默认文件名或用户选择的文件名(包含全路径)
+    DWORD	nMaxFile; 	// lpstrFile 缓冲区的长度
+    LPTSTR	lpstrFileTitle; 	// 用户选择的文件名(无路径)
+    DWORD	nMaxFileTitle; 	// lpstrFileTitle 缓冲区的长度
+    LPCTSTR	lpstrInitialDir; 	// 对话框的初始路径
+    LPCTSTR	lpstrTitle; 	// 对话框标题(为NULL时默认使用"打开"、"另存为")
+    DWORD	Flags; 	// 指定对话框初始选项和用户的输入情况
+    WORD	nFileOffset; 	// 在全路径字符串中，文件名部分之前的长度
+    WORD	nFileExtension; 	// 在全路径字符串中，表示扩展名的"."所在位置
+    LPCTSTR	lpstrDefExt; 	// 用户未输入扩展名时自动添加的扩展名
+    DWORD	lCustData; 	// 用于钩子程序的自定义数据
+    LPOFNHOOKPROC	lpfnHook; 	// 钩子程序地址
+    LPCTSTR	lpTemplateName; 	// 在hInstance指定的模块中的对话框模板资源名称
+} OPENFILENAME; 
+
+以下是PPT中介绍的**具体代码实现方法及示例**，按功能模块分类整理：
+
+
+### 一、打开/另存为对话框的使用
+#### 1. 添加通用模块文件
+需将 `mdlOpenSaveDlg.cpp`、`mdlOpenSaveDlg.h`、`BHashStrK.cpp`、`BHashStrK.h` 拷贝到程序文件夹，并添加到VS解决方案中。
+
+#### 2. 代码示例
+```cpp
+#include "mdlOpenSaveDlg.h"  // 包含头文件
+
+// 设置文件类型过滤器
+OsdSetFilter(TEXT("文本文件(*.txt)|*.txt"), true);  // true表示自动添加“所有文件”
+
+// 弹出“打开”对话框
+LPTSTR szFileOpen = OsdOpenDlg(form1.hWnd());  // 参数为父窗口句柄
+if (*szFileOpen) {  // 若用户未取消（选择了文件）
+    OpenFile(szFileOpen);  // 自定义的打开文件函数
+}
+
+// 弹出“另存为”对话框
+LPTSTR szFileSave = OsdSaveDlg(form1.hWnd());
+if (*szFileSave) {  // 若用户未取消
+    SaveFile(szFileSave);  // 自定义的保存文件函数
+}
+```
+
+
+### 二、文件读写（通用模块API）
+#### 1. 保存文件（SaveFile函数）
+```cpp
+bool SaveFile(LPCTSTR szFileName) {
+    // 打开文件
+    HANDLE hFile = EFOpen(szFileName, GENERIC_WRITE);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    // 向文件写入文本框内容（EF_LineSeed_None表示不额外添加换行符）
+    EFPrint(hFile, form1.Control(ID_txtMain).Text(), EF_LineSeed_None);
+    
+    EFClose(hFile);  // 关闭文件
+    return true;
+}
+```
+
+#### 2. 按行读取文件（CBReadLinesEx类）
+需先添加 `BReadLinesEx.cpp`、`BReadLinesEx.h` 到项目。
+```cpp
+#include "BReadLinesEx.h"
+
+bool OpenFile(LPCTSTR szFileName) {
+    tstring sContent(TEXT(""));  // 存储文件内容
+    CBReadLinesEx file;  // 定义按行读取文件的对象
+    
+    if (!file.OpenFile(szFileName)) return false;  // 打开文件
+    pApp->MousePointerGlobalSet(IDC_Wait);  // 设置鼠标为沙漏状
+
+    while (!file.IsEndRead()) {  // 循环读取每一行
+        LPTSTR szLine = NULL;
+        file.GetNextLine(szLine);  // 获取下一行内容
+        if (file.IsErrOccured()) {
+            pApp->MousePointerGlobalSet(0);
+            return false;
+        }
+
+        // 拼接内容（统一换行符为\r\n）
+        if (file.iEndLineSignLast) sContent += TEXT("\r\n");
+        sContent += szLine;
+    }
+
+    // 将内容显示到文本框
+    form1.Control(ID_txtMain).TextSet(sContent);
+    _tcscpy(m_szFileName, szFileName);  // 保存文件名到全局变量
+    form1.TextSet(m_szFileName);  // 窗体标题栏显示文件名
+    form1.TextAdd(TEXT("-我的记事本"));
+    pApp->MousePointerGlobalSet(0);  // 恢复鼠标
+    m_b1ModiSign = false;  // 设置“未修改”标志
+    return true;
+}
+```
+
+
+### 三、文件加密保存（选学）
+#### 1. 核心原理（按位异或）
+利用异或运算可逆性：`a ^ k ^ k = a`，其中 `a` 是原文，`k` 是密钥。
+
+#### 2. 代码示例（修改通用模块后，在业务代码中使用）
+```cpp
+// 保存文件时增加密钥参数
+bool SaveFile(LPCTSTR szFileName, char* encKey) {
+    HANDLE hFile = EFOpen(szFileName, GENERIC_WRITE);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    // 写入时传入加密密钥
+    EFPrint(hFile, form1.Control(ID_txtMain).Text(), EF_LineSeed_None, 
+            -1, 1, TEXT("无法向文件中写入字符串"), encKey);
+    
+    EFClose(hFile);
+    return true;
+}
+
+// 打开文件时增加密钥参数
+bool OpenFile(LPCTSTR szFileName, char* encKey) {
+    CBReadLinesEx file;
+    if (!file.OpenFile(szFileName)) return false;
+    file.EncryptKey = encKey;  // 设置解密密钥
+    // ... 后续读取代码同前
+}
+
+// 弹出密码输入框的函数（示例）
+bool InputEncrypt() {
+    frmInputEnc.Load();
+    frmInputEnc.IconSet(IDI_ICON2);
+    frmInputEnc.Move(form1.Left() + (form1.Width() - frmInputEnc.Width()) / 2,
+                     form1.Top() + (form1.Height() - frmInputEnc.Height()) / 2);
+    m_fEncInputOK = false;
+    frmInputEnc.Show(1, form1.hWnd());  // 模态显示
+    return m_fEncInputOK;
+}
+
+// 菜单“保存”调用示例
+case ID_mnuFileSaveAs:
+    {
+        LPTSTR szFileSave;
+        OsdSetFilter(TEXT("文本文件(*.txt)|*.txt"));
+        szFileSave = OsdSaveDlg(form1.hWnd());
+        if (*szFileSave) {
+            if (InputEncrypt()) {  // 先输入密码
+                SaveFile(szFileSave, m_EncryptStr);  // 再保存
+            }
+        }
+    }
+    break;
+```
+
+
+### 四、保存状态检查与提示
+#### 1. 全局变量定义
+```cpp
+bool m_b1ModiSign;  // true表示内容已修改且未保存
+```
+
+#### 2. 检查保存的函数（QuerySave）
+```cpp
+bool QuerySave() {
+    if (m_b1ModiSign) {  // 若内容已修改
+        EDlgBoxCmdID ms = MsgBox(TEXT("您已经对内容做了修改。\r\n\r\n是否保存文件?"),
+                                  TEXT("我的记事本"), mb_YesNoCancel, mb_IconExclamation);
+        if (ms == idYes) {
+            Menu_Click(ID_mnuFileSave, false, false);  // 模拟点击“保存”
+            if (m_b1ModiSign) return true;  // 若保存失败，阻止后续操作
+        } else if (ms == idCancel) {
+            return true;  // 用户取消，阻止后续操作
+        }
+    }
+    return false;  // 可以继续操作
+}
+```
+
+#### 3. 文本框修改事件
+```cpp
+void txtMain_Change() {
+    m_b1ModiSign = true;  // 内容修改，设置标志
+    form1.Control(ID_txtMain).Refresh();  // 刷新控件
+}
+
+// 在main()中绑定事件
+form1.EventAdd(ID_txtMain, eEdit_Change, txtMain_Change);
+```
+
+#### 4. 窗体关闭前检查
+```cpp
+void form_QueryUnload(bool& bCancel) {
+    if (QuerySave()) {  // 若需要阻止关闭
+        bCancel = true;
+    }
+}
+
+// 在main()中绑定事件
+form1.EventAdd(0, eForm_QueryUnload, form_QueryUnload);
+```
+
+
+### 五、文件-新建功能
+```cpp
+case ID_mnuFileNew:
+    if (QuerySave()) return;  // 先检查是否保存
+    form1.Control(ID_txtMain).TextSet(TEXT(""));  // 清空文本框
+    form1.TextSet(TEXT("我的记事本"));  // 重置窗体标题
+    *m_szFileName = 0;  // 清空文件名
+    m_b1ModiSign = false;  // 重置修改标志
+    m_fEncInputOK = false;
+    m_EncryptStr = NULL;
+    break;
+```
+
+
+### 六、文件拖放打开
+#### 1. 设置控件属性
+在资源编辑器中，将文本框的 `Accept Files` 属性设为 `True`。
+
+#### 2. 代码示例
+```cpp
+void txtMain_FilesDrop(int ptrArrFiles, int count, int x, int y) {
+    TCHAR** files = (TCHAR**)ptrArrFiles;  // 转换参数类型
+    if (QuerySave()) return;  // 检查保存
+    if (InputEncrypt()) {  // 输入密码
+        OpenFile(files[1], m_EncryptStr);  // 打开拖放的第一个文件
+    }
+}
+
+// 在main()中绑定事件
+form1.EventAdd(ID_txtMain, eFilesDrop, txtMain_FilesDrop);
+```
+
+
+### 七、其他功能代码
+#### 1. 设置鼠标光标
+```cpp
+// 设置单个控件的鼠标光标
+form1.Control(ID_txtMain).MousePointerSet(IDC_CURSOR1);  // IDC_CURSOR1是导入的光标资源
+
+// 设置全局鼠标光标
+pApp->MousePointerGlobalSet(IDC_CURSOR1);
+```
+
+#### 2. 挖空窗体
+```cpp
+// 将窗体中白色区域挖空（显示后面的内容）
+form1.TransparencyKeySet(RGB(255, 255, 255));
+```
+
+#### 3. 设置窗体透明度
+```cpp
+form1.OpacitySet(128);  // 0-255，255为不透明，0为完全透明
+```
+
