@@ -1,0 +1,80 @@
+好的，我们针对这个**包含 `main` 函数的完整 `.cpp` 文件**，总结其中用到的**所有 BForm 框架特有的方法、类与机制**，并逐一结合代码举例：
+
+---
+
+### 一、核心窗体类 `CBForm` 的独特方法
+这是 BForm 框架封装 Windows 窗体的核心类，提供了一整套替代 Win32 API 的高层方法。
+
+| 方法名          | 代码举例                                                                 | 说明                                                                 |
+|-----------------|--------------------------------------------------------------------------|----------------------------------------------------------------------|
+| **构造函数**    | `CBForm form1(ID_form1);`                                              | 通过资源 ID（如 `ID_form1`）直接绑定 `.rc` 文件中的窗体模板，自动完成窗体创建。 |
+| `Control()`     | `form1.Control(ID_picLogo);`                                           | 获取窗体中指定 ID 控件的引用，返回可操作的控件对象。               |
+| `PictureSet()`  | `form1.Control(ID_picLogo).PictureSet(IDB_BITMAP4);`                  | 为图片控件设置位图资源（通过资源 ID `IDB_BITMAP4`）。              |
+| `BackColorSet()`| `form1.BackColorSet(RGB(255, 255, 255));`                             | 设置窗体背景色，封装了 Win32 `SetBkColor` 等 API。                 |
+| `Show()`        | `form1.Show();`                                                         | 显示窗体并**启动框架内部消息循环**，替代 Win32 `ShowWindow` + 消息循环。 |
+| `UnLoad()`      | `form1.UnLoad();`                                                       | 卸载窗体并停止其消息路由，自动清理相关资源。                         |
+| `IconSet()`     | `form1.IconSet(IDI_ICON1);`                                            | 为窗体设置图标资源（通过资源 ID `IDI_ICON1`），同时设置标题栏和任务栏图标。 |
+| `Move()`        | `frmTextParser.Move( (pApp->ScreenWidth()-frmTextParser.Width())/2, ... );` | 移动窗体到指定坐标，常用于居中显示。                                 |
+| `EventAdd()`    | `form1.EventAdd(ID_cmdLogin, eCommandButton_Click, cmdLogin_Click);`  | 核心事件绑定方法，见下文“事件驱动机制”详细说明。                     |
+
+---
+
+### 二、控件操作的独特方法
+通过 `CBForm::Control()` 获取控件对象后，可调用以下 BForm 特有的控件方法：
+
+| 方法名       | 代码举例                                                     | 说明                                                                 |
+|--------------|--------------------------------------------------------------|----------------------------------------------------------------------|
+| `Text()`     | `tstring sName = form1.Control(ID_txtUserLogin).Text();`   | 获取文本框（或其他可输入控件）的当前文本内容。                     |
+| `TextSet()`  | `frmTextParser.Control(ID_txtParser).TextSet(sResult);`     | 设置文本框（或其他可显示控件）的文本内容，支持 `tstring` 直接传入。 |
+
+---
+
+### 三、事件驱动机制（`EventAdd` + 事件类型枚举）
+这是 BForm 替代 Win32 消息循环的核心机制，通过 `EventAdd` 将“控件/窗体 + 事件类型 + 回调函数”动态绑定。
+
+#### 1. `EventAdd` 方法原型（框架定义）
+```cpp
+void EventAdd(int nCtrlID, int nEventType, void (*pFunc)(...));
+```
+- **第1参数**：`0` 代表窗体本身，非 `0` 代表控件 ID（如 `ID_cmdLogin`）；
+- **第2参数**：框架定义的事件类型枚举；
+- **第3参数**：对应事件签名的回调函数指针。
+
+#### 2. 文件中用到的事件类型与绑定举例
+| 事件类型枚举          | 绑定代码举例（`main` 中）                          | 对应回调函数签名（文件中定义）                     | 触发时机                     |
+|-----------------------|-----------------------------------------------------|----------------------------------------------------|------------------------------|
+| `eForm_Load`          | `form1.EventAdd(0, eForm_Load, form1_Load);`       | `void form1_Load();`                               | 窗体首次加载完成时           |
+| `eForm_QueryUnload`   | `form1.EventAdd(0, eForm_QueryUnload, form1_QueryUnload);` | `void form1_QueryUnload(int pbCancel);`            | 窗体即将关闭时（可取消退出） |
+| `eCommandButton_Click`| `form1.EventAdd(ID_cmdLogin, eCommandButton_Click, cmdLogin_Click);` | `void cmdLogin_Click();`                            | 按钮被点击时                 |
+| `eKeyDown`            | `form1.EventAdd(ID_txtPassword, eKeyDown, txtPassword_KeyDown);` | `void txtPassword_KeyDown(int keyCode, int shift, int pbCancel);` | 控件获得焦点且键盘按下时     |
+| `eTextBox_Change`     | `frmTextParser.EventAdd(ID_txtText, eTextBox_Change, txtText_Change);` | `void txtText_Change();`                            | 文本框内容发生变化时         |
+
+---
+
+### 四、BForm 框架特有的工具函数与宏
+这些是框架提供的“语法糖”或通用工具，简化标准 C++/Win32 的繁琐操作。
+
+| 工具/宏       | 代码举例                                                     | 说明                                                                 |
+|---------------|--------------------------------------------------------------|----------------------------------------------------------------------|
+| `TEXT()` 宏   | `userDict[TEXT("admin")] = TEXT("123456");`                | 自动将字符串常量转换为 `TCHAR*` 类型（兼容 Unicode/ANSI）。        |
+| `tstring`     | `std::map<tstring, tstring> userDict;`                      | 框架定义的字符串类型，等价于 `std::basic_string<TCHAR>`。          |
+| `Str()`       | `sResult = sResult + Str(iLen) + TEXT("\r\n");`             | 将整数（如 `int`）转换为 `tstring`，替代 `sprintf` 或 `to_string`。 |
+| `MsgBox()`    | `MsgBox(TEXT("要退出吗？"), TEXT("退出确认"), mb_YesNoCancel, mb_IconQuestion);` | 封装 Win32 `MessageBox`，参数为“提示内容、标题、按钮类型、图标类型”。 |
+| `Split()`     | `ct = Split(sText.c_str(), p, TEXT(","));`                  | 框架通用字符串分割函数，按分隔符（如 `","`）分割字符串，返回子串数量。 |
+
+---
+
+### 五、全局应用对象指针 `pApp`
+这是 BForm 框架预定义的全局指针，指向当前应用程序实例，提供屏幕尺寸等全局信息：
+```cpp
+// 代码举例：在 frmTextParser_Load 中居中窗体
+frmTextParser.Move(
+    ( pApp->ScreenWidth() - frmTextParser.Width() ) / 2,  // 获取屏幕宽度
+    ( pApp->ScreenHeight() - frmTextParser.Height() ) / 2   // 获取屏幕高度
+);
+```
+
+---
+
+### 六、资源 ID 绑定机制
+文件中大量使用的 `ID_form1`、`ID_frmTextParser`、`ID_cmdLogin`、`ID_txtPassword`、`IDB_BITMAP4`、`IDI_ICON1` 等常量，均来自框架自动生成的 `resource.h`，通过这些 ID 直接与 `.rc` 资源文件中的窗体、控件、位图、图标绑定，无需手动加载资源。
