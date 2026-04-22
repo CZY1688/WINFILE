@@ -26,12 +26,41 @@ LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
 // Dialog
 //
 
-ID_form1 DIALOG DISCARDABLE  200, 100, 202, 119
+ID_form1 DIALOG DISCARDABLE  200, 100, 360, 220
 STYLE WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_POPUP | WS_CAPTION | WS_SYSMENU | 
     WS_THICKFRAME
-CAPTION "�ҵĴ���"
-FONT 9, "����"
+CAPTION "我的记事本"
+FONT 9, "����"
 BEGIN
+    EDITTEXT        ID_txtMain,7,7,346,206,ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | 
+                    ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL
+END
+
+IDR_MENU_MAIN MENU DISCARDABLE 
+BEGIN
+    POPUP "文件(&F)"
+    BEGIN
+        MENUITEM "新建(&N)",                    ID_mnuFileNew
+        MENUITEM "打开...(&O)",                 ID_mnuFileOpen
+        MENUITEM "保存(&S)",                    ID_mnuFileSave
+        MENUITEM "另存为...(&A)",               ID_mnuFileSaveAs
+        MENUITEM SEPARATOR
+        MENUITEM "退出(&X)",                    ID_mnuFileExit
+    END
+    POPUP "编辑(&E)"
+    BEGIN
+        MENUITEM "剪切(&T)",                    ID_mnuEditCut
+        MENUITEM "复制(&C)",                    ID_mnuEditCopy
+        MENUITEM "粘贴(&P)",                    ID_mnuEditPaste
+        MENUITEM "删除(&D)",                    ID_mnuEditDelete
+        MENUITEM SEPARATOR
+        MENUITEM "全选(&A)",                    ID_mnuEditSelectAll
+        MENUITEM "时间/日期(&W)",               ID_mnuEditTimeDate
+    END
+    POPUP "帮助(&H)"
+    BEGIN
+        MENUITEM "创新点...(&I)",               ID_mnuHelpInnovation
+    END
 END
 
 
@@ -46,9 +75,9 @@ BEGIN
     ID_form1, DIALOG
     BEGIN
         LEFTMARGIN, 7
-        RIGHTMARGIN, 195
+        RIGHTMARGIN, 353
         TOPMARGIN, 7
-        BOTTOMMARGIN, 112
+        BOTTOMMARGIN, 213
     END
 END
 #endif    // APSTUDIO_INVOKED
