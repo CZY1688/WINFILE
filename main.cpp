@@ -1,6 +1,7 @@
 #include "resource.h"
 #include "BForm.h"
 #include <commdlg.h>
+#include <stdio.h>
 #include <string>
 #include <vector>
 #pragma comment(lib, "comdlg32.lib")
@@ -16,6 +17,8 @@ std::string g_encryptKeyAnsi;
 const int cEditorMargin = 6;
 const int cMinEditorSize = 10;
 const LONGLONG cMaxOpenFileSize = 1024LL * 1024LL * 64LL;
+const COLORREF cNoTransparencyKey = (COLORREF)0xFFFFFFFF;
+const int cOpacityNoLayered = -1;
 
 void UpdateTitle()
 {
@@ -49,6 +52,7 @@ bool ConvertWideToAnsi(LPCTSTR textWide, std::string& outAnsi)
 
 void XorBytes(std::vector<BYTE>& bytes, const std::string& key)
 {
+	// 仅用于教学演示：异或算法安全性有限，不适合保护敏感数据。
 	if (key.empty() || bytes.empty()) return;
 	size_t keyLen = key.length();
 	for (size_t i = 0; i < bytes.size(); ++i)
@@ -199,7 +203,7 @@ bool LoadTextFile(LPCTSTR szFilePath)
 	if (!bDecoded)
 	{
 		pApp->MousePointerGlobalSet(0);
-		MsgBox(TEXT("文件编码解析失败（可能密码错误）。"), TEXT("我的记事本"), mb_OK, mb_IconError);
+		MsgBox(TEXT("文件解析失败。可能原因：文件已加密且密码错误，或文件编码不支持。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
 
@@ -306,7 +310,7 @@ void form1_Load()
 	g_encryptKeyAnsi.clear();
 	form1.IconSet(IDI_ICON1);
 	form1.SetMenuMain(IDR_MENU_MAIN);
-	form1.Control(ID_txtMain).MousePointerSet(IDC_HAND);
+	form1.Control(ID_txtMain).MousePointerSet(IDC_IBEAM);
 	UpdateTitle();
 }
 
@@ -332,20 +336,20 @@ void txtMain_FilesDrop(int ptrArrFiles, int count, int x, int y)
 	if (count <= 0 || files == NULL) return;
 	if (ShouldCancelByUnsavedChanges()) return;
 	if (!InputEncrypt()) return;
-	LoadTextFile(files[1]);
+	LoadTextFile(files[0]);
 }
 
 void cmdOK_Click()
 {
-	LPTSTR szText = frmInputEnc.Control(ID_txtEnc).Text();
-	if (szText == NULL || *szText == 0)
+	tstring inputText = frmInputEnc.Control(ID_txtEnc).Text();
+	if (inputText.empty())
 	{
 		g_encryptKeyAnsi.clear();
 	}
 	else
 	{
 		std::string keyTemp;
-		if (ConvertWideToAnsi(szText, keyTemp))
+		if (ConvertWideToAnsi(inputText.c_str(), keyTemp))
 			g_encryptKeyAnsi = keyTemp;
 		else
 			g_encryptKeyAnsi.clear();
@@ -432,21 +436,21 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 
 	if (menuID == ID_mnuViewOpacity)
 	{
-		form1.TransparencyKeySet((COLORREF)0xFFFFFFFF);
+		form1.TransparencyKeySet(cNoTransparencyKey);
 		form1.OpacitySet(128);
 		return;
 	}
 
 	if (menuID == ID_mnuViewPunchWhite)
 	{
-		form1.OpacitySet(-1);
+		form1.OpacitySet(cOpacityNoLayered);
 		form1.TransparencyKeySet(RGB(255, 255, 255));
 		return;
 	}
 
 	if (menuID == ID_mnuViewNormal)
 	{
-		form1.TransparencyKeySet((COLORREF)0xFFFFFFFF);
+		form1.TransparencyKeySet(cNoTransparencyKey);
 		form1.OpacitySet(255);
 		return;
 	}
