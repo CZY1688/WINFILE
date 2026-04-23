@@ -36,6 +36,17 @@ BEGIN
                     ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL
 END
 
+ID_frmInputEnc DIALOG DISCARDABLE  0, 0, 240, 96
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "输入加密密码"
+FONT 9, "����"
+BEGIN
+    LTEXT           "请输入文件加密/解密密码（留空表示不加密）",IDC_STATIC,8,8,224,18
+    EDITTEXT        ID_txtEnc,8,30,224,14,ES_PASSWORD | ES_AUTOHSCROLL
+    DEFPUSHBUTTON   "确定",ID_cmdOK,88,70,60,14
+    PUSHBUTTON      "取消",ID_cmdCancel,164,70,60,14
+END
+
 IDR_MENU_MAIN MENU DISCARDABLE 
 BEGIN
     POPUP "文件(&F)"
@@ -59,6 +70,10 @@ BEGIN
     END
     POPUP "帮助(&H)"
     BEGIN
+        MENUITEM "半透明窗体(&T)",               ID_mnuViewOpacity
+        MENUITEM "挖空白色区域(&K)",             ID_mnuViewPunchWhite
+        MENUITEM "恢复正常显示(&R)",             ID_mnuViewNormal
+        MENUITEM SEPARATOR
         MENUITEM "创新点...(&I)",               ID_mnuHelpInnovation
     END
 END
@@ -78,6 +93,13 @@ BEGIN
         RIGHTMARGIN, 353
         TOPMARGIN, 7
         BOTTOMMARGIN, 213
+    END
+    ID_frmInputEnc, DIALOG
+    BEGIN
+        LEFTMARGIN, 8
+        RIGHTMARGIN, 232
+        TOPMARGIN, 8
+        BOTTOMMARGIN, 84
     END
 END
 #endif    // APSTUDIO_INVOKED

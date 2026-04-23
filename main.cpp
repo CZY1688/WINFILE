@@ -1,23 +1,20 @@
 #include "resource.h"
 #include "BForm.h"
 #include <commdlg.h>
-#include <stdio.h>
+#include <string>
 #include <vector>
 #pragma comment(lib, "comdlg32.lib")
 
 CBForm form1(ID_form1);
+CBForm frmInputEnc(ID_frmInputEnc);
 
-// 当前文件路径；为空表示尚未命名的新文件。
 TCHAR g_szCurrentFile[MAX_PATH] = TEXT("");
-// 文本是否已修改且未保存。
 bool g_bModified = false;
-// 代码主动设置文本时，避免触发“已修改”标志。
 bool g_bInternalUpdating = false;
-// 主编辑框与窗体边缘的留白。
+bool g_bEncInputConfirmed = false;
+std::string g_encryptKeyAnsi;
 const int cEditorMargin = 6;
-// 编辑框最小宽高，避免窗体过小时控件不可用。
 const int cMinEditorSize = 10;
-// 单次允许打开的最大文件体积（64MB）。
 const LONGLONG cMaxOpenFileSize = 1024LL * 1024LL * 64LL;
 
 void UpdateTitle()
@@ -32,10 +29,50 @@ void UpdateTitle()
 		form1.TextSet(TEXT("我的记事本"));
 	}
 
-	if (g_bModified)
+	if (g_bModified) form1.TextAdd(TEXT(" *"));
+}
+
+bool ConvertWideToAnsi(LPCTSTR textWide, std::string& outAnsi)
+{
+#ifdef UNICODE
+	int need = WideCharToMultiByte(CP_ACP, 0, textWide, -1, NULL, 0, NULL, NULL);
+	if (need <= 0) return false;
+	std::vector<char> buff((size_t)need);
+	if (WideCharToMultiByte(CP_ACP, 0, textWide, -1, &buff[0], need, NULL, NULL) <= 0) return false;
+	outAnsi.assign(&buff[0]);
+	return true;
+#else
+	outAnsi = textWide ? textWide : "";
+	return true;
+#endif
+}
+
+void XorBytes(std::vector<BYTE>& bytes, const std::string& key)
+{
+	if (key.empty() || bytes.empty()) return;
+	size_t keyLen = key.length();
+	for (size_t i = 0; i < bytes.size(); ++i)
 	{
-		form1.TextAdd(TEXT(" *"));
+		bytes[i] = (BYTE)(bytes[i] ^ (BYTE)key[i % keyLen]);
 	}
+}
+
+bool DecodeMultiByteText(UINT codePage, const BYTE* pBytes, int cbBytes, tstring& textOut)
+{
+	if (cbBytes <= 0)
+	{
+		textOut = TEXT("");
+		return true;
+	}
+
+	int cchNeed = MultiByteToWideChar(codePage, 0, (LPCSTR)pBytes, cbBytes, NULL, 0);
+	if (cchNeed <= 0) return false;
+
+	std::vector<WCHAR> chars((size_t)cchNeed + 1);
+	if (MultiByteToWideChar(codePage, 0, (LPCSTR)pBytes, cbBytes, &chars[0], cchNeed) <= 0) return false;
+	chars[cchNeed] = 0;
+	textOut = &chars[0];
+	return true;
 }
 
 bool SelectOpenFile(TCHAR* szFilePath, DWORD cchFilePath)
@@ -62,13 +99,9 @@ bool SelectSaveFile(TCHAR* szFilePath, DWORD cchFilePath)
 	ZeroMemory(&ofn, sizeof(ofn));
 
 	if (g_szCurrentFile[0] != 0)
-	{
 		lstrcpyn(szFilePath, g_szCurrentFile, cchFilePath);
-	}
 	else
-	{
 		szFilePath[0] = 0;
-	}
 
 	ofn.lStructSize = sizeof(ofn);
 	ofn.hwndOwner = form1.hWnd();
@@ -82,36 +115,26 @@ bool SelectSaveFile(TCHAR* szFilePath, DWORD cchFilePath)
 	return GetSaveFileName(&ofn) == TRUE;
 }
 
-bool DecodeMultiByteText(UINT codePage, const BYTE* pBytes, int cbBytes, tstring& textOut)
+bool InputEncrypt()
 {
-	if (cbBytes <= 0)
-	{
-		textOut = TEXT("");
-		return true;
-	}
-
-	int cchNeed = MultiByteToWideChar(codePage, 0, (LPCSTR)pBytes, cbBytes, NULL, 0);
-	if (cchNeed <= 0)
-	{
-		return false;
-	}
-
-	std::vector<WCHAR> chars;
-	chars.resize(cchNeed + 1);
-	if (MultiByteToWideChar(codePage, 0, (LPCSTR)pBytes, cbBytes, &chars[0], cchNeed) <= 0)
-	{
-		return false;
-	}
-	chars[cchNeed] = 0;
-	textOut = &chars[0];
-	return true;
+	g_bEncInputConfirmed = false;
+	frmInputEnc.Load();
+	frmInputEnc.Move(
+		form1.Left() + (form1.Width() - frmInputEnc.Width()) / 2,
+		form1.Top() + (form1.Height() - frmInputEnc.Height()) / 2
+	);
+	frmInputEnc.Control(ID_txtEnc).TextSet(TEXT(""));
+	frmInputEnc.Show(1, form1.hWnd());
+	return g_bEncInputConfirmed;
 }
 
 bool LoadTextFile(LPCTSTR szFilePath)
 {
+	pApp->MousePointerGlobalSet(IDC_Wait);
 	HANDLE hFile = CreateFile(szFilePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE)
 	{
+		pApp->MousePointerGlobalSet(0);
 		MsgBox(TEXT("文件打开失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
@@ -120,6 +143,7 @@ bool LoadTextFile(LPCTSTR szFilePath)
 	if (!GetFileSizeEx(hFile, &liSize))
 	{
 		CloseHandle(hFile);
+		pApp->MousePointerGlobalSet(0);
 		MsgBox(TEXT("无法读取文件大小。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
@@ -127,36 +151,37 @@ bool LoadTextFile(LPCTSTR szFilePath)
 	if (liSize.QuadPart > cMaxOpenFileSize)
 	{
 		CloseHandle(hFile);
+		pApp->MousePointerGlobalSet(0);
 		MsgBox(TEXT("文件过大（超过64MB），暂不支持打开。"), TEXT("我的记事本"), mb_OK, mb_IconExclamation);
 		return false;
 	}
 
 	DWORD dwSize = (DWORD)liSize.QuadPart;
-	std::vector<BYTE> bytes;
-	bytes.resize(dwSize);
-
+	std::vector<BYTE> bytes((size_t)dwSize);
 	DWORD dwRead = 0;
 	if (dwSize > 0)
 	{
 		if (!ReadFile(hFile, &bytes[0], dwSize, &dwRead, NULL) || dwRead != dwSize)
 		{
 			CloseHandle(hFile);
+			pApp->MousePointerGlobalSet(0);
 			MsgBox(TEXT("文件读取失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 			return false;
 		}
 	}
 	CloseHandle(hFile);
 
-	tstring sContent = TEXT("");
+	XorBytes(bytes, g_encryptKeyAnsi);
+
+	tstring sContent(TEXT(""));
 	bool bDecoded = false;
 	if (dwSize >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
 	{
 		int cch = (int)((dwSize - 2) / sizeof(WCHAR));
-		std::vector<WCHAR> chars;
-		chars.resize(cch + 1);
+		std::vector<WCHAR> chars((size_t)cch + 1);
 		if (cch > 0)
 		{
-			CopyMemory(&chars[0], &bytes[2], cch * sizeof(WCHAR));
+			CopyMemory(&chars[0], &bytes[2], (size_t)cch * sizeof(WCHAR));
 		}
 		chars[cch] = 0;
 		sContent = &chars[0];
@@ -173,7 +198,8 @@ bool LoadTextFile(LPCTSTR szFilePath)
 
 	if (!bDecoded)
 	{
-		MsgBox(TEXT("文件编码解析失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
+		pApp->MousePointerGlobalSet(0);
+		MsgBox(TEXT("文件编码解析失败（可能密码错误）。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
 
@@ -184,53 +210,58 @@ bool LoadTextFile(LPCTSTR szFilePath)
 	lstrcpyn(g_szCurrentFile, szFilePath, MAX_PATH);
 	g_bModified = false;
 	UpdateTitle();
+	pApp->MousePointerGlobalSet(0);
 	return true;
 }
 
 bool SaveTextFile(LPCTSTR szFilePath)
 {
-	TCHAR szTempPath[MAX_PATH + 8];
-	// 参数来源于 OPENFILENAME，按 MAX_PATH 约定处理并预留 ".tmp" 后缀。
 	if (lstrlen(szFilePath) >= MAX_PATH - 4)
 	{
 		MsgBox(TEXT("文件路径过长，无法保存。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
+
+	TCHAR szTempPath[MAX_PATH + 8];
 	lstrcpyn(szTempPath, szFilePath, _countof(szTempPath));
 	lstrcat(szTempPath, TEXT(".tmp"));
 
-	// 先写临时文件，写入成功后再覆盖原文件，避免中途失败导致原文件损坏。
+	pApp->MousePointerGlobalSet(IDC_Wait);
 	HANDLE hFile = CreateFile(szTempPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE)
 	{
+		pApp->MousePointerGlobalSet(0);
 		MsgBox(TEXT("文件保存失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
 
-	const BYTE bom[2] = { 0xFF, 0xFE };
-	DWORD dwWritten = 0;
-	if (!WriteFile(hFile, bom, 2, &dwWritten, NULL) || dwWritten != 2)
+	tstring sText = form1.Control(ID_txtMain).Text();
+	DWORD textBytes = (DWORD)(sText.length() * sizeof(WCHAR));
+	std::vector<BYTE> bytes;
+	bytes.reserve((size_t)textBytes + 2);
+	bytes.push_back(0xFF);
+	bytes.push_back(0xFE);
+	if (textBytes > 0)
 	{
-		CloseHandle(hFile);
+		BYTE* pText = (BYTE*)sText.c_str();
+		bytes.insert(bytes.end(), pText, pText + textBytes);
+	}
+
+	XorBytes(bytes, g_encryptKeyAnsi);
+
+	DWORD dwWritten = 0;
+	DWORD dwToWrite = (DWORD)bytes.size();
+	bool ok = (dwToWrite == 0) || (WriteFile(hFile, &bytes[0], dwToWrite, &dwWritten, NULL) && dwWritten == dwToWrite);
+	CloseHandle(hFile);
+	pApp->MousePointerGlobalSet(0);
+
+	if (!ok)
+	{
 		DeleteFile(szTempPath);
-		MsgBox(TEXT("写入文件头失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
+		MsgBox(TEXT("写入文件失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
 		return false;
 	}
 
-	tstring sText = form1.Control(ID_txtMain).Text();
-	DWORD dwTextBytes = (DWORD)(sText.length() * sizeof(WCHAR));
-	if (dwTextBytes > 0)
-	{
-		if (!WriteFile(hFile, sText.c_str(), dwTextBytes, &dwWritten, NULL) || dwWritten != dwTextBytes)
-		{
-			CloseHandle(hFile);
-			DeleteFile(szTempPath);
-			MsgBox(TEXT("写入文件内容失败。"), TEXT("我的记事本"), mb_OK, mb_IconError);
-			return false;
-		}
-	}
-
-	CloseHandle(hFile);
 	if (!MoveFileEx(szTempPath, szFilePath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
 	{
 		DeleteFile(szTempPath);
@@ -247,46 +278,35 @@ bool SaveTextFile(LPCTSTR szFilePath)
 bool SaveCurrentFileAs()
 {
 	TCHAR szFilePath[MAX_PATH];
-	if (!SelectSaveFile(szFilePath, MAX_PATH))
-	{
-		return false;
-	}
+	if (!SelectSaveFile(szFilePath, MAX_PATH)) return false;
+	if (!InputEncrypt()) return false;
 	return SaveTextFile(szFilePath);
 }
 
 bool SaveCurrentFile()
 {
-	if (g_szCurrentFile[0] == 0)
-	{
-		return SaveCurrentFileAs();
-	}
+	if (g_szCurrentFile[0] == 0) return SaveCurrentFileAs();
 	return SaveTextFile(g_szCurrentFile);
 }
 
-// 返回 true 表示“应取消当前操作”，返回 false 表示“可继续操作”。
 bool ShouldCancelByUnsavedChanges()
 {
-	if (!g_bModified)
-	{
-		return false;
-	}
+	if (!g_bModified) return false;
 
 	EDlgBoxCmdID cmd = MsgBox(TEXT("当前内容已修改，是否先保存？"), TEXT("我的记事本"), mb_YesNoCancel, mb_IconExclamation);
-	if (cmd == idYes)
-	{
-		return !SaveCurrentFile();
-	}
-	if (cmd == idCancel)
-	{
-		return true;
-	}
+	if (cmd == idYes) return !SaveCurrentFile();
+	if (cmd == idCancel) return true;
 	return false;
 }
 
 void form1_Load()
 {
+	g_szCurrentFile[0] = 0;
+	g_bModified = false;
+	g_encryptKeyAnsi.clear();
 	form1.IconSet(IDI_ICON1);
 	form1.SetMenuMain(IDR_MENU_MAIN);
+	form1.Control(ID_txtMain).MousePointerSet(IDC_HAND);
 	UpdateTitle();
 }
 
@@ -301,25 +321,51 @@ void form1_Resize()
 
 void txtMain_Change()
 {
-	if (g_bInternalUpdating)
-	{
-		return;
-	}
+	if (g_bInternalUpdating) return;
 	g_bModified = true;
 	UpdateTitle();
 }
 
+void txtMain_FilesDrop(int ptrArrFiles, int count, int x, int y)
+{
+	TCHAR** files = (TCHAR**)ptrArrFiles;
+	if (count <= 0 || files == NULL) return;
+	if (ShouldCancelByUnsavedChanges()) return;
+	if (!InputEncrypt()) return;
+	LoadTextFile(files[1]);
+}
+
+void cmdOK_Click()
+{
+	LPTSTR szText = frmInputEnc.Control(ID_txtEnc).Text();
+	if (szText == NULL || *szText == 0)
+	{
+		g_encryptKeyAnsi.clear();
+	}
+	else
+	{
+		std::string keyTemp;
+		if (ConvertWideToAnsi(szText, keyTemp))
+			g_encryptKeyAnsi = keyTemp;
+		else
+			g_encryptKeyAnsi.clear();
+	}
+	g_bEncInputConfirmed = true;
+	frmInputEnc.UnLoad();
+}
+
+void cmdCancel_Click()
+{
+	g_bEncInputConfirmed = false;
+	frmInputEnc.UnLoad();
+}
+
 void form1_QueryUnload(int pbCancel)
 {
-	// eForm_QueryUnload 的回调签名在框架中固定为 int。
-	// 按框架约定：该 int 实际上传入的是 int* 地址值（本工程为 Win32，指针与 int 同宽）。
 	if (ShouldCancelByUnsavedChanges())
 	{
 		int* pCancel = (int*)(INT_PTR)pbCancel;
-		if (pCancel != NULL)
-		{
-			*pCancel = 1;
-		}
+		if (pCancel != NULL) *pCancel = 1;
 	}
 }
 
@@ -333,6 +379,7 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 		g_bInternalUpdating = false;
 		g_szCurrentFile[0] = 0;
 		g_bModified = false;
+		g_encryptKeyAnsi.clear();
 		UpdateTitle();
 		return;
 	}
@@ -343,7 +390,7 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 		TCHAR szFilePath[MAX_PATH];
 		if (SelectOpenFile(szFilePath, MAX_PATH))
 		{
-			LoadTextFile(szFilePath);
+			if (InputEncrypt()) LoadTextFile(szFilePath);
 		}
 		return;
 	}
@@ -366,35 +413,11 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 		return;
 	}
 
-	if (menuID == ID_mnuEditCut)
-	{
-		form1.Control(ID_txtMain).Cut();
-		return;
-	}
-
-	if (menuID == ID_mnuEditCopy)
-	{
-		form1.Control(ID_txtMain).Copy();
-		return;
-	}
-
-	if (menuID == ID_mnuEditPaste)
-	{
-		form1.Control(ID_txtMain).Paste();
-		return;
-	}
-
-	if (menuID == ID_mnuEditDelete)
-	{
-		form1.Control(ID_txtMain).SelTextSet(TEXT(""));
-		return;
-	}
-
-	if (menuID == ID_mnuEditSelectAll)
-	{
-		form1.Control(ID_txtMain).SelSet(0, -1);
-		return;
-	}
+	if (menuID == ID_mnuEditCut) { form1.Control(ID_txtMain).Cut(); return; }
+	if (menuID == ID_mnuEditCopy) { form1.Control(ID_txtMain).Copy(); return; }
+	if (menuID == ID_mnuEditPaste) { form1.Control(ID_txtMain).Paste(); return; }
+	if (menuID == ID_mnuEditDelete) { form1.Control(ID_txtMain).SelTextSet(TEXT("")); return; }
+	if (menuID == ID_mnuEditSelectAll) { form1.Control(ID_txtMain).SelSet(0, -1); return; }
 
 	if (menuID == ID_mnuEditTimeDate)
 	{
@@ -407,14 +430,35 @@ void Menu_Click(int menuID, int bIsFromAcce, int bIsFromSysMenu)
 		return;
 	}
 
+	if (menuID == ID_mnuViewOpacity)
+	{
+		form1.TransparencyKeySet((COLORREF)0xFFFFFFFF);
+		form1.OpacitySet(128);
+		return;
+	}
+
+	if (menuID == ID_mnuViewPunchWhite)
+	{
+		form1.OpacitySet(-1);
+		form1.TransparencyKeySet(RGB(255, 255, 255));
+		return;
+	}
+
+	if (menuID == ID_mnuViewNormal)
+	{
+		form1.TransparencyKeySet((COLORREF)0xFFFFFFFF);
+		form1.OpacitySet(255);
+		return;
+	}
+
 	if (menuID == ID_mnuHelpInnovation)
 	{
 		MsgBox(
 			TEXT("创新点：\r\n")
-			TEXT("1. 自动识别 UTF-16/UTF-8/ANSI 文本编码并打开；\r\n")
-			TEXT("2. 保存采用 UTF-16 编码，中文兼容性更好；\r\n")
-			TEXT("3. 标题栏实时显示“未保存(*)”状态；\r\n")
-			TEXT("4. 关闭/新建/打开前自动询问保存，减少误操作。"),
+			TEXT("1. 文件可选异或加密保存和解密打开；\r\n")
+			TEXT("2. 支持拖放文件打开；\r\n")
+			TEXT("3. 关闭/新建/打开前自动询问保存；\r\n")
+			TEXT("4. 支持窗体透明度与透明色挖空效果。"),
 			TEXT("本程序创新点"),
 			mb_OK,
 			mb_IconInformation
@@ -430,6 +474,10 @@ int main()
 	form1.EventAdd(0, eForm_QueryUnload, form1_QueryUnload);
 	form1.EventAdd(0, eMenu_Click, Menu_Click);
 	form1.EventAdd(ID_txtMain, eEdit_Change, txtMain_Change);
+	form1.EventAdd(ID_txtMain, eFilesDrop, txtMain_FilesDrop);
+
+	frmInputEnc.EventAdd(ID_cmdOK, eCommandButton_Click, cmdOK_Click);
+	frmInputEnc.EventAdd(ID_cmdCancel, eCommandButton_Click, cmdCancel_Click);
 
 	form1.Show();
 	return 0;
